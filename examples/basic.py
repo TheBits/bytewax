@@ -1,8 +1,9 @@
 import bytewax
+import logging
 
 
 def inp():
-    for i in range(10):
+    for i in [0, 1, 2, 3, 4, "a"]:
         yield (0, i)
 
 
@@ -31,4 +32,8 @@ flow.inspect(peek)
 
 
 if __name__ == "__main__":
+    # FORMAT = '%(levelname)s %(name)s %(asctime)-15s %(filename)s:%(lineno)d %(message)s'
+    # FORMAT = '%(message)s'
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.DEBUG)
     ec.build_and_run()

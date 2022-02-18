@@ -24,6 +24,8 @@ use timely::WorkerConfig;
 use timely::dataflow::operators::aggregation::*;
 use timely::dataflow::operators::*;
 use timely::dataflow::*;
+use tracing::{debug, info, instrument};
+use tracing_subscriber::*;
 
 pub(crate) mod webserver;
 
@@ -268,6 +270,17 @@ impl Iterator for TdPyIterator {
 
 /// A Python object that is callable.
 struct TdPyCallable(Py<PyAny>);
+
+impl fmt::Debug for TdPyCallable {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s: PyResult<String> = Python::with_gil(|py| {
+            let self_ = self.0.as_ref(py);
+            let name: String = self_.getattr("__name__")?.extract()?;
+            Ok(name)
+        });
+        f.write_str(&s.map_err(|_| std::fmt::Error {})?)
+    }
+}
 
 /// Have PyO3 do type checking to ensure we only make from callable
 /// objects.
@@ -541,6 +554,7 @@ impl Dataflow {
     ///
     /// It emits a `(key, updated_value)` tuple downstream for each
     /// input item.
+
     fn stateful_map(&mut self, builder: TdPyCallable, mapper: TdPyCallable) {
         self.steps.push(Step::MapStateful { builder, mapper });
     }
@@ -563,25 +577,31 @@ fn build(builder: &TdPyCallable) -> TdPyAny {
     Python::with_gil(|py| with_traceback!(py, builder.call0(py)).into())
 }
 
+#[instrument(level="info")]
 fn map(mapper: &TdPyCallable, item: TdPyAny) -> TdPyAny {
+    // info!("entering operation");
     Python::with_gil(|py| with_traceback!(py, mapper.call1(py, (item,))).into())
 }
 
 fn flat_map(mapper: &TdPyCallable, item: TdPyAny) -> TdPyIterator {
+    debug!("entering operation");
     Python::with_gil(|py| with_traceback!(py, mapper.call1(py, (item,))?.extract(py)))
 }
 
 fn filter(predicate: &TdPyCallable, item: &TdPyAny) -> bool {
+    debug!("entering operation");
     Python::with_gil(|py| with_traceback!(py, predicate.call1(py, (item,))?.extract(py)))
 }
 
 fn inspect(inspector: &TdPyCallable, item: &TdPyAny) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         with_traceback!(py, inspector.call1(py, (item,)));
     });
 }
 
 fn inspect_epoch(inspector: &TdPyCallable, epoch: &u64, item: &TdPyAny) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         with_traceback!(py, inspector.call1(py, (*epoch, item)));
     });
@@ -589,11 +609,13 @@ fn inspect_epoch(inspector: &TdPyCallable, epoch: &u64, item: &TdPyAny) {
 
 /// Turn a Python 2-tuple into a Rust 2-tuple.
 fn lift_2tuple(key_value_pytuple: TdPyAny) -> (TdPyAny, TdPyAny) {
+    debug!("entering operation");
     Python::with_gil(|py| with_traceback!(py, key_value_pytuple.as_ref(py).extract()))
 }
 
 /// Turn a Rust 2-tuple into a Python 2-tuple.
 fn wrap_2tuple(key_value: (TdPyAny, TdPyAny)) -> TdPyAny {
+    debug!("entering operation");
     Python::with_gil(|py| key_value.to_object(py).into())
 }
 
@@ -610,6 +632,7 @@ fn reduce(
     key: &TdPyAny,
     value: TdPyAny,
 ) -> (bool, impl IntoIterator<Item = TdPyAny>) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         let updated_aggregator = match aggregator {
             Some(aggregator) => {
@@ -641,6 +664,7 @@ fn reduce_epoch(
     _key: &TdPyAny,
     value: TdPyAny,
 ) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         let updated_aggregator = match aggregator {
             Some(aggregator) => {
@@ -657,6 +681,7 @@ fn reduce_epoch_local(
     aggregators: &mut HashMap<TdPyAny, TdPyAny>,
     all_key_value_in_epoch: &Vec<(TdPyAny, TdPyAny)>,
 ) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         for (key, value) in all_key_value_in_epoch {
             aggregators
@@ -677,6 +702,7 @@ fn stateful_map(
     key: &TdPyAny,
     value: TdPyAny,
 ) -> (bool, impl IntoIterator<Item = TdPyAny>) {
+    debug!("entering operation");
     Python::with_gil(|py| {
         let (updated_state, emit_value): (TdPyAny, TdPyAny) = with_traceback!(
             py,
@@ -692,6 +718,7 @@ fn stateful_map(
 }
 
 fn capture(captor: &TdPyCallable, epoch: &u64, item: &TdPyAny) {
+    debug!("entering operation");
     Python::with_gil(|py| with_traceback!(py, captor.call1(py, ((*epoch, item.clone_ref(py)),))));
 }
 
@@ -972,6 +999,7 @@ impl Executor {
         processes: usize,
         addresses: Option<Vec<String>>,
     ) -> PyResult<()> {
+
         py.allow_threads(move || {
             let (builders, other) = match processes {
                 0 => timely::CommunicationConfig::Process(threads),
@@ -1109,5 +1137,7 @@ fn mod_tiny_dancer(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sleep_keep_gil, m)?)?;
     m.add_function(wrap_pyfunction!(sleep_release_gil, m)?)?;
 
+    tracing_subscriber::fmt().finish();
+    pyo3_log::init();
     Ok(())
 }
